@@ -9,25 +9,30 @@ class Plugin {
   void init(string fn) {
     file = fn;
     output = new FeedIterator!string;
-    input = readback(fn, output).splitAt "\n";
+    input = readback("./$fn", output).splitAt "\n";
   }
   void setup(void delegate(string) addCmd) {
     while auto line <- input {
       if (line == "READY") return;
-      if (auto rest = line.startsWith "REGISTER ") {
+      if (line == "REGISTER") {
+        addCmd(null);
+      } else if (auto rest = line.startsWith "REGISTER ") {
         addCmd(rest.dup);
       } else {
-        raise-error new Error "Invalid command-code in setup phase: $line";
+        raise new Error "Invalid command-code in setup phase: '$line'";
       }
     }
   }
   void process(void delegate(string) sendMesg) {
     while auto line <- input {
+      // writeln "?> $line";
       if (line == "READY") return;
-      sendMesg(line);
+      if (auto rest = line.startsWith "SAY ") sendMesg rest;
+      else if (auto rest = line.startsWith "DEBUG ") writeln "[dbg] $rest";
+      else raise new Error "Invalid command-code in process phase: '$line'";
     }
   }
-  void writeToPlugin(string data) { output.write "$data\n"; }
+  void writeToPlugin(string data) { /*writeln "?< $data";*/ output.write "$data\n"; }
   void close() {
     (ReadbackStream: (SplitIterator:input).sup).close();
   }
@@ -38,9 +43,9 @@ void main(string[] args) {
   string nick = "neatbot";
   string channel;
   using new Options {
-    addLong(required => true, "host", "h", \(string h) { host = h; });
+    addLong("host", "h", \(string h) { host = h; }, =>required);
     addLong("nick", "n", \(string n) { nick = n; });
-    addLong(required => true, "channel", "c", \(string c) { channel = c; });
+    addLong("channel", "c", \(string c) { channel = c; }, =>required);
     args = process args;
   }
   auto sock = connect (host, 6667);
@@ -61,17 +66,29 @@ void main(string[] args) {
   }
   for auto line <- recv {
     writeln "< $line";
-    if (line.endsWith ":+i") {
+    if (line.find ":+i") {
       sendLine "JOIN #$channel";
     }
     if (auto rest = line.startsWith "PING :") sendLine ("PONG :"~rest);
+    void sendMesg(string s) { sendLine "PRIVMSG #$channel :$s"; }
     string[] load-plugin(string plugname) {
+      if (plugname.find("..") || plugname.startsWith("/")) {
+        sendMesg "Please do not attempt to escape the current folder";
+        return null;
+      }
       string[] defs;
+      set-handler(Error err) {
+        sendMesg "An error has occurred: $err";
+        invoke-exit "return";
+      }
+      define-exit "return" return null;
       using new Plugin (plugname)
         setup \(string s) {
-          if (defined(s)) raise-error new Error "While loading $plugname: '$s' already defined";
+          if (s) {
+            if (defined(s)) raise new Error "While loading $plugname: '$s' already defined";
+            defs ~= s;
+          }
           plugin-registry ~= (plugname, s, that);
-          defs ~= s;
         };
       return defs;
     }
@@ -85,7 +102,6 @@ void main(string[] args) {
       
       return sum;
     }
-    void sendMesg(string s) { sendLine "PRIVMSG #$channel :$s"; }
     if (auto rest = line.between("PRIVMSG #$channel :;load", "")) {
       auto plugname = rest.strip();
       if (!plugname.length) {
@@ -111,13 +127,24 @@ void main(string[] args) {
       load-plugin plugname;
       sendMesg "$plugname reloaded.";
     }else::
+    if (line == ":py-ctcp!python@ctcp-scanner.rizon.net PRIVMSG neatbot :\x01VERSION\x01") {
+      sendLine("PRIVMSG py-ctcp :Neatbot platform 0.1");
+    }else::
+    bool handled;
     if (auto rest = line.between("PRIVMSG #$channel :;", "")) {
       auto cmdCode = slice(&rest, " ");
       if (auto pos = defined(cmdCode)) {
         using plugin-registry[pos][2] {
-          writeToPlugin(rest);
-          process \(string s) { sendMesg s; };
+          writeToPlugin rest;
+          process &sendMesg;
+          handled = true;
         }
+      }
+    }
+    if !handled {
+      for auto trip <- plugin-registry if !trip[1] using trip[2] {
+        writeToPlugin line;
+        process &sendMesg;
       }
     }
   }

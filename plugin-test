@@ -2,6 +2,6 @@
 echo "REGISTER echo"
 echo "READY"
 while read LINE; do
-	echo "echoing \"$LINE\""
+	echo "SAY echoing \"$LINE\""
 	echo "READY";
 done
