@@ -64,44 +64,45 @@ void main(string[] args) {
     }
     return FindResult:-1;
   }
+  void sendMesg(string s) { sendLine "PRIVMSG #$channel :$s"; }
+  string[] load-plugin(string plugname, bool quietly = false) {
+    if (plugname.find("..") || plugname.startsWith("/")) {
+      sendMesg "Please do not attempt to escape the current folder";
+      return null;
+    }
+    string[] defs;
+    set-handler(Error err) {
+      if (!quietly) sendMesg "An error has occurred: $err";
+      invoke-exit "return";
+    }
+    define-exit "return" return null;
+    using new Plugin (plugname)
+      setup \(string s) {
+	if (s) {
+	  if (defined(s)) raise new Error "While loading $plugname: '$s' already defined";
+	  defs ~= s;
+	}
+	plugin-registry ~= (plugname, s, that);
+      };
+    return defs;
+  }
+  int unload-plugin(string plugname) {
+    auto to-unload = plugin-registry.selectAs \(string name, string, Plugin pl) { if (name != plugname) return Plugin:null; return pl; } #.eval[];
+    int sum = to-unload.length;
+    for auto pl <- to-unload pl.close();
+    to-unload.free;
+    
+    plugin-registry = plugin-registry.select \(string name, string, Plugin) { return name != plugname; } #.eval[];
+    
+    return sum;
+  }
+  load-plugin("autostart", => quietly);
   for auto line <- recv {
     writeln "< $line";
     if (line.find ":+i") {
       sendLine "JOIN #$channel";
     }
     if (auto rest = line.startsWith "PING :") sendLine ("PONG :"~rest);
-    void sendMesg(string s) { sendLine "PRIVMSG #$channel :$s"; }
-    string[] load-plugin(string plugname) {
-      if (plugname.find("..") || plugname.startsWith("/")) {
-        sendMesg "Please do not attempt to escape the current folder";
-        return null;
-      }
-      string[] defs;
-      set-handler(Error err) {
-        sendMesg "An error has occurred: $err";
-        invoke-exit "return";
-      }
-      define-exit "return" return null;
-      using new Plugin (plugname)
-        setup \(string s) {
-          if (s) {
-            if (defined(s)) raise new Error "While loading $plugname: '$s' already defined";
-            defs ~= s;
-          }
-          plugin-registry ~= (plugname, s, that);
-        };
-      return defs;
-    }
-    int unload-plugin(string plugname) {
-      auto to-unload = plugin-registry.selectAs \(string name, string, Plugin pl) { if (name != plugname) return Plugin:null; return pl; } #.eval[];
-      int sum = to-unload.length;
-      for auto pl <- to-unload pl.close();
-      to-unload.free;
-      
-      plugin-registry = plugin-registry.select \(string name, string, Plugin) { return name != plugname; } #.eval[];
-      
-      return sum;
-    }
     if (auto rest = line.between("PRIVMSG #$channel :;load", "")) {
       auto plugname = rest.strip();
       if (!plugname.length) {
