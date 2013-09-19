@@ -27,9 +27,12 @@ class Plugin {
     while auto line <- input {
       // writeln "?> $line";
       if (line == "READY") return;
-      if (auto rest = line.startsWith "SAY ") sendMesg rest;
-      else if (auto rest = line.startsWith "DEBUG ") writeln "[dbg] $rest";
-      else raise new Error "Invalid command-code in process phase: '$line'";
+      if (auto rest = line.startsWith "SAY ")
+        sendMesg rest;
+      else if (auto rest = line.startsWith "DEBUG ")
+        writeln "[dbg] $rest";
+      else
+        raise new Error "Invalid command-code in process phase: '$line'";
     }
   }
   void writeToPlugin(string data) { /*writeln "?< $data";*/ output.write "$data\n"; }
@@ -50,16 +53,23 @@ void main(string[] args) {
   }
   auto sock = connect (host, 6667);
   auto rng = getPRNG 23;
-  void sendLine(string s) { writeln "> $s"; sock.sendAll byte[]:s; sock.sendAll byte[]:"\r\n"; }
-  for auto line <- ["NICK $nick"[],
-    "USER $nick $nick $nick $nick $nick"
-  ] { sendLine line; }
+  
+  void sendLine(string s) {
+    writeln "> $s";
+    sock.sendAll ubyte[]:s;
+    sock.sendAll ubyte[]:"\r\n";
+  }
+  
+  sendLine "NICK $nick";
+  sendLine "USER $nick $nick $nick $nick $nick";
+  
+  // set up iterator to split input into lines
   auto recv = castIter!string readDg &sock.recv #.splitAt "\r\n";
   
   (string, string, Plugin)[] plugin-registry;
   
   FindResult defined(string s) {
-    for (int id, string code) <- zip(0..-1, [for trip <- plugin-registry: trip[1]]) {
+    for int id <- ints && string code <- [for trip <- plugin-registry: trip[1]] {
       if (s == code) return FindResult:id;
     }
     return FindResult:-1;
@@ -71,81 +81,93 @@ void main(string[] args) {
       return null;
     }
     string[] defs;
+    
     set-handler(Error err) {
       if (!quietly) sendMesg "An error has occurred: $err";
       invoke-exit "return";
     }
     define-exit "return" return null;
+    
     using new Plugin (plugname)
-      setup \(string s) {
-	if (s) {
-	  if (defined(s)) raise new Error "While loading $plugname: '$s' already defined";
-	  defs ~= s;
-	}
-	plugin-registry ~= (plugname, s, that);
-      };
+      setup λ(string s) {
+        if (s) {
+          if (defined s) raise new Error "While loading $plugname: '$s' already defined";
+          defs ~= s;
+        }
+        plugin-registry ~= (plugname, s, that);
+      }
     return defs;
   }
+  
   int unload-plugin(string plugname) {
-    auto to-unload = plugin-registry.selectAs \(string name, string, Plugin pl) { if (name != plugname) return Plugin:null; return pl; } #.eval[];
+    auto to-unload = plugin-registry
+      .selectAs λ(string name, string, Plugin pl) { if (name != plugname) return Plugin:null; return pl; }
+      #.eval[];
     int sum = to-unload.length;
     for auto pl <- to-unload pl.close();
     to-unload.free;
     
-    plugin-registry = plugin-registry.select \(string name, string, Plugin) { return name != plugname; } #.eval[];
+    // filter out plugin
+    plugin-registry = plugin-registry
+      .select λ(string name, string, Plugin) { return name != plugname; }
+      #.eval[];
     
     return sum;
   }
+  
   load-plugin("autostart", => quietly);
+  
   for auto line <- recv {
     writeln "< $line";
     if (line.find ":+i") {
       sendLine "JOIN #$channel";
     }
+    
     if (auto rest = line.startsWith "PING :") sendLine ("PONG :"~rest);
     if (auto rest = line.between("PRIVMSG #$channel :;load", "")) {
       auto plugname = rest.strip();
       if (!plugname.length) {
         sendMesg "Argument expected for ;load! ";
-      }else::
-      auto defs = load-plugin plugname;
-      sendMesg "Defined $defs";
-    } else::
-    if (auto rest = line.between("PRIVMSG #$channel :;unload", "")) {
+      } else {
+        auto defs = load-plugin plugname;
+        sendMesg "Defined $defs";
+      }
+    } else if (auto rest = line.between("PRIVMSG #$channel :;unload", "")) {
       auto plugname = rest.strip();
       if (!plugname.length) {
         sendMesg "Argument expected for ;unload! ";
-      }else::
-      auto sum = unload-plugin plugname;
-      sendMesg "$sum definitions removed.";
-    }else::
-    if (auto rest = line.between("PRIVMSG #$channel :;reload", "")) {
+      } else {
+        auto sum = unload-plugin plugname;
+        sendMesg "$sum definitions removed.";
+      }
+    } else if (auto rest = line.between("PRIVMSG #$channel :;reload", "")) {
       auto plugname = rest.strip();
       if (!plugname.length) {
         sendMesg "Argument expected for ;reload! ";
-      }else::
-      unload-plugin plugname;
-      load-plugin plugname;
-      sendMesg "$plugname reloaded.";
-    }else::
-    if (line == ":py-ctcp!python@ctcp-scanner.rizon.net PRIVMSG neatbot :\x01VERSION\x01") {
+      } else {
+        unload-plugin plugname;
+        load-plugin plugname;
+        sendMesg "$plugname reloaded.";
+      }
+    } else if (line == ":py-ctcp!python@ctcp-scanner.rizon.net PRIVMSG neatbot :\x01VERSION\x01") {
       sendLine("PRIVMSG py-ctcp :Neatbot platform 0.1");
-    }else::
-    bool handled;
-    if (auto rest = line.between("PRIVMSG #$channel :;", "")) {
-      auto cmdCode = slice(&rest, " ");
-      if (auto pos = defined(cmdCode)) {
-        using plugin-registry[pos][2] {
-          writeToPlugin rest;
-          process &sendMesg;
-          handled = true;
+    } else {
+      bool handled;
+      if (auto rest = line.between("PRIVMSG #$channel :;", "")) {
+        auto cmdCode = slice(&rest, " ");
+        if (auto pos = defined cmdCode) {
+          using plugin-registry[pos][2] {
+            writeToPlugin rest;
+            process &sendMesg;
+            handled = true;
+          }
         }
       }
-    }
-    if !handled {
-      for auto trip <- plugin-registry if !trip[1] using trip[2] {
-        writeToPlugin line;
-        process &sendMesg;
+      if !handled {
+        for auto trip <- plugin-registry if !trip[1] using trip[2] {
+          writeToPlugin line;
+          process &sendMesg;
+        }
       }
     }
   }

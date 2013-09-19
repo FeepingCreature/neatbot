@@ -1,0 +1,35 @@
+module dice;
+
+import std.file, std.string, std.util;
+
+void main() {
+  void rdy() writeln "READY";
+  writeln "REGISTER roll";
+  rdy;
+  auto rng = flatten readfile open "/dev/urandom";
+  int rand() { byte[] mew; for 0..4 { rng.advance(); mew ~= rng.value; } return (int[]: mew)[0]; }
+  string enclosed(int i) {
+    string res;
+    while i {
+      res = ["⓿", "❶", "➋", "➌", "➍", "➎", "➏", "➐", "➑", "➒"][i%10] ~ res;
+      i /= 10;
+    }
+    if (!res) res = "⓪";
+    return res;
+  }
+  string diceface(int i) {
+    return ["⚀", "⚁", "⚂", "⚃", "⚄", "⚅"][i - 1];
+  }
+  while string line = readln() {
+    if (auto pos = line.find("d")) {
+      auto num1 = line[0..pos].atoi(), num2 = line[pos+1..$].atoi();
+      if (num1 == 3 && num2 == 6) {
+        int six() return rand() % 6 + 1;
+        writeln "SAY $line: \x1f$(diceface six())\x1f$(diceface six())$(diceface six())";
+      } else {
+        writeln "SAY $line: $([for 0..num1: \"$(rand() % num2 + 1)\"].eval[].join \", \")";
+      }
+    } else writeln "SAY Weird command: $line";
+    rdy;
+  }
+}
